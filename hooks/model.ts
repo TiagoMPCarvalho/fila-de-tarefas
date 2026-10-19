@@ -1,4 +1,4 @@
-import type { Item, Step, Usage } from '../types'
+import type { Bg, Item, Step, Usage } from '../types'
 
 // Lógica pura da fila: formatação, custo por modelo e espelho do plano do Claude.
 
@@ -16,10 +16,12 @@ export const clip = (text: string, max: number): string => {
 }
 
 // O app embrulha texto colado (<pasted_content id="…">…</pasted_content>) e injeta avisos do sistema: isso não é
-// o pedido, só ocupa a linha. Tira só esses invólucros; HTML de verdade no texto fica como está.
+// o pedido, só ocupa a linha. Os avisos do sistema saem inteiros (com o conteúdo); do texto colado e dos /comandos sai só
+// o invólucro, e o conteúdo fica. HTML de verdade no texto fica como está.
+const NOISE = /<(system-reminder|local-command-[a-z]+|command-[a-z]+)\b[^>]*>[\s\S]*?<\/\1>/gi
 const WRAPPERS = /<\/?(?:pasted_content|system-reminder|local-command-[a-z]+|command-[a-z]+)\b[^>]*>/gi
 
-export const tidy = (raw: string): string => raw.replace(WRAPPERS, ' ').replace(/\s+/g, ' ').trim() || raw.trim()
+export const tidy = (raw: string): string => raw.replace(NOISE, ' ').replace(WRAPPERS, ' ').replace(/\s+/g, ' ').trim() || raw.trim()
 
 export const num = (n: number): string => {
   if (n >= 999_950) return `${(n / 1e6).toFixed(1).replace('.', ',')}M`.replace(',0M', 'M')
@@ -201,6 +203,7 @@ export const itemInfo = (i: Item, pos: number): string[] => {
   if (i.status === 'waiting' && i.foldedInto !== undefined) lines.push('Estado: enviado durante a tarefa (lido no mesmo turno)')
   else if (i.status === 'waiting') lines.push(`Estado: em espera (#${pos})`)
   else if (i.status === 'running') lines.push('Estado: em andamento')
+  else if (i.status === 'background') lines.push(`Estado: o Claude já respondeu; segue em segundo plano (${bgSummary(i.bg ?? [])})`)
   else lines.push(`Estado: ${i.outcome === undefined || i.outcome === 'answer' ? 'concluído' : 'interrompido'}${i.durationMs ? ' em ' + secs(i.durationMs) : ''}`)
   if (p.total > 0) lines.push(`Plano: ${p.done}/${p.total} etapas`)
   return [...lines, ...costDetail(i.usage, i.unmeasured)]
@@ -215,3 +218,74 @@ export const stepInfo = (s: Step, n: number): string[] => {
 }
 
 export const liveInfo = (text: string): string[] => text.split('\n').slice(0, 8).map(l => clip(l, 160))
+
+// ---------- Segundo plano e mensagens que não são pedidos seus ----------
+
+// O app e o Claude injetam mensagens como se fossem prompts (aviso de tarefa em segundo plano, mensagem de agente).
+// Não são pedidos seus: não entram na fila, só atualizam o trabalho em segundo plano.
+const MACHINE_KINDS = new Set(['task-notification', 'peer', 'peer-send-message', 'projects-relay', 'coordinator', 'observer', 'observer-activity', 'auto-continuation'])
+// Só as marcas que SEMPRE são de máquina. <system-reminder> e <local-command-*> podem vir antes de um pedido de verdade
+// (logo depois de um /comando), então não entram aqui: o tidy só tira o invólucro delas.
+const MACHINE_TEXT = /^\s*<(?:task-notification|agent-message|teammate-message)\b/i
+
+export const isMachine = (kind: string | undefined, raw: string): boolean =>
+  (kind !== undefined && MACHINE_KINDS.has(kind)) || MACHINE_TEXT.test(raw)
+
+export type Notice = { id?: string; status: 'done' | 'failed' }
+
+// <task-notification><task-id>b721ngssn</task-id><status>completed</status>…
+export const parseNotice = (raw: string): Notice => {
+  const id = /<task-id>\s*([^<\s]+)\s*<\/task-id>/i.exec(raw)?.[1]
+  const st = /<status>\s*([^<\s]+)\s*<\/status>/i.exec(raw)?.[1]?.toLowerCase() ?? ''
+  return { id, status: /fail|error|kill|cancel|stop/.test(st) ? 'failed' : 'done' }
+}
+
+// Id que a ferramenta devolve ao iniciar um comando em segundo plano ("… running in background with ID: bwxfxbc2w").
+export const parseBgId = (text: string): string | undefined => /\b(?:ID|id|task[_ -]?id)\s*[:=]\s*["']?([A-Za-z0-9_-]{6,})/.exec(text)?.[1]
+
+const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
+
+export const bgRunning = (list: Bg[]): Bg[] => list.filter(b => b.status === 'running')
+
+// "2 agentes, 1 comando"
+export const bgSummary = (list: Bg[]): string => {
+  const run = bgRunning(list)
+  const agents = run.filter(b => b.kind === 'agent').length
+  const cmds = run.length - agents
+  return [agents > 0 ? plural(agents, 'agente', 'agentes') : '', cmds > 0 ? plural(cmds, 'comando', 'comandos') : ''].filter(Boolean).join(', ')
+}
+
+// Dá baixa num trabalho em segundo plano. Se era o último e o Claude já tinha respondido, o pedido termina.
+// Sem id conhecido, um aviso de comando baixa o mais antigo que ainda roda (agentes só pelo id exato).
+export const settleBg = (i: Item, id: string | undefined, status: 'done' | 'failed', anyCmd: boolean): Item => {
+  const bg = i.bg ?? []
+  let k = id === undefined ? -1 : bg.findIndex(b => b.id === id)
+  if (k < 0 && anyCmd) k = bg.findIndex(b => b.kind === 'cmd' && b.status === 'running' && b.guess === true)
+  if (k < 0) return i
+  const next = bg.map((b, j) => (j === k ? { ...b, status } : b))
+  const pending = next.some(b => b.status === 'running')
+  if (i.status === 'background' && !pending) {
+    return { ...i, bg: next, status: 'done', outcome: 'answer', live: undefined, liveInfo: undefined }
+  }
+  return { ...i, bg: next }
+}
+
+export const addBgUsage = (i: Item, id: string, u: ApiUsage): Item => {
+  const bg = i.bg ?? []
+  return { ...i, bg: bg.map(b => (b.id === id ? { ...b, usage: addUsage(b.usage, u) } : b)) }
+}
+
+// Qual pedido volta a rodar quando chega o aviso de segundo plano: o que está em segundo plano; senão o último concluído.
+export const resumeTarget = (list: Item[]): number => {
+  const top = (i: Item) => i.foldedInto === undefined
+  let k = list.findLastIndex(i => i.status === 'background')
+  if (k < 0) k = list.findLastIndex(i => top(i) && i.status === 'done' && (i.bg ?? []).length > 0)
+  if (k < 0) k = list.findLastIndex(i => top(i) && i.status === 'done')
+  return k
+}
+
+export const bgInfo = (b: Bg): string[] => [
+  `${b.kind === 'agent' ? 'Agente' : 'Comando'}: ${clip(b.label, 400)}`,
+  `Estado: ${b.status === 'running' ? 'rodando' : b.status === 'done' ? 'concluído' : 'falhou ou foi interrompido'}`,
+  ...costDetail(b.usage),
+]

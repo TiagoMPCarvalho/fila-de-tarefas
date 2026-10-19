@@ -4,6 +4,8 @@ Plugin pro Claude Code que mostra o que você pediu e o que o Claude está fazen
 
 O painel lista os pedidos (esperando, rodando, concluídos). O plano que o Claude monta vira sub-itens do pedido que está rodando, e embaixo de cada item aparece quanto de token foi gasto e em qual modelo. Se você interrompe no meio, o pedido e a etapa em que parou ficam em vermelho. Mensagem enviada com o Claude já trabalhando aparece embaixo da tarefa que a leu, com uma seta.
 
+Se o Claude termina de responder mas ainda tem subagente ou comando rodando em segundo plano, o pedido continua como em andamento (o spinner fica apagado) e esses trabalhos aparecem embaixo dele com os tokens de cada um. O pedido só vira concluído quando o último termina. Os avisos de tarefa em segundo plano e as mensagens de agente não viram pedido na fila: só dão baixa no trabalho certo.
+
 A faixa de cima mostra só duas linhas: o pedido que está rodando e o que o Claude está fazendo agora ("pensando…", "Edit menu.tsx").
 
 ```
@@ -66,6 +68,8 @@ O custo de uma etapa do plano é o que foi gasto enquanto ela estava em andament
 O painel só aparece onde a janela desenha painéis. Se o `/fila` responder que a janela não o desenhou, é isso.
 
 Foi visto funcionando no app desktop. No terminal puro só passou pelos testes.
+
+O plano só aparece como sub-itens quando o Claude usa o cartão de plano (`update_plan` ou `TodoWrite`). Se ele trabalha sem montar um plano, o pedido aparece sozinho, com o que está sendo feito agora. E se um comando em segundo plano nunca avisar que terminou, o pedido fica como em andamento.
 
 ## Testes
 

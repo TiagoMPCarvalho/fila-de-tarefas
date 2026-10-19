@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 
-import { addUsage, applyPlan, costLine, isFolded, modelName, num, tidy } from './hooks/model'
+import { addUsage, applyPlan, costLine, isFolded, isMachine, modelName, num, parseBgId, parseNotice, tidy } from './hooks/model'
 
 const PANE = { plugin: 'fila-de-tarefas', component: 'Pane', props: {} as never, requestId: 'fila-de-tarefas' } as const
 const BAND = { plugin: 'fila-de-tarefas', component: 'AbovePrompt', props: { hasSurvey: false } as never } as const
@@ -243,7 +243,8 @@ test('o "i" não usa hover nem cartão flutuante (nada absoluto no painel nem na
 
 test('rótulo sem o invólucro de texto colado: só o pedido ocupa a linha', async ($, on) => {
   expect(tidy('<pasted_content id="1b64"> Em algum momento do jogo </pasted_content>')).toBe('Em algum momento do jogo')
-  expect(tidy('<system-reminder>aviso</system-reminder> corrija o <div> do menu')).toBe('aviso corrija o <div> do menu')
+  // Avisos do sistema saem inteiros; HTML de verdade no pedido fica.
+  expect(tidy('<system-reminder>aviso</system-reminder> corrija o <div> do menu')).toBe('corrija o <div> do menu')
   // Só invólucro, sem nada dentro: cai no texto original em vez de ficar vazio.
   expect(tidy('<pasted_content id="x"></pasted_content>')).toBe('<pasted_content id="x"></pasted_content>')
 
@@ -299,4 +300,199 @@ test('a faixa acima do campo mostra só a tarefa principal e o que está pensand
     cedeu = /no implementation for ui.render/.test(String(err))
   }
   expect(cedeu).toBe(true)
+})
+
+const NOTE = (id: string, status = 'completed') =>
+  `<task-notification><task-id>${id}</task-id><status>${status}</status></task-notification>`
+
+const heads = (t: string) => (t.match(/"key":"e-t[0-9]+"/g) ?? []).length
+
+test('avisos de segundo plano e mensagens de agente não são pedidos', () => {
+  expect(isMachine('task-notification', 'qualquer coisa')).toBe(true)
+  expect(isMachine('peer', 'oi')).toBe(true)
+  expect(isMachine(undefined, '<agent-message from="a0b0c9a1ddbfb3e1c">relatório</agent-message>')).toBe(true)
+  expect(isMachine(undefined, NOTE('b721ngssn'))).toBe(true)
+  // O que o usuário digita (inclusive texto colado) continua sendo pedido.
+  expect(isMachine('composer', 'faça o vídeo')).toBe(false)
+  expect(isMachine(undefined, '<pasted_content id="1b64"> Em algum momento</pasted_content>')).toBe(false)
+  expect(parseNotice(NOTE('b721ngssn'))).toEqual({ id: 'b721ngssn', status: 'done' })
+  expect(parseNotice(NOTE('x123456', 'failed')).status).toBe('failed')
+  expect(parseBgId('Command running in background with ID: bwxfxbc2w. Output is being written to: C:/x')).toBe('bwxfxbc2w')
+  expect(parseBgId('sem id aqui')).toBeUndefined()
+})
+
+test('mensagens de máquina não entram na fila', async ($, on) => {
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await $.prompt.submit({ text: 'tarefa real' })
+  await $.prompt.submit({ text: '<agent-message from="a0b0c9a1ddbfb3e1c">relatório do agente</agent-message>' })
+  await $.prompt.submit({ text: NOTE('nenhum0001') })
+  const t = JSON.stringify(await ui.drawn())
+  expect(heads(t)).toBe(1)
+  expect(t).toContain('#1 tarefa real')
+  expect(t).not.toContain('agent-message')
+  expect(t).not.toContain('task-notification')
+})
+
+test('comando em segundo plano mantém o pedido em andamento até o aviso de que terminou', async ($, on) => {
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: 'ok' }))
+  on('tool.call', () => ({ result: {}, text: 'Command running in background with ID: bg12345678. Output is being written to: x', ref: 0, isReadOnly: true }) as never)
+  on('turn.step', async function* (_$, e) {
+    yield { kind: 'stop', stopReason: 'end_turn', usage: usage('claude-opus-5-5', 100, 50) } as never
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: usage('claude-opus-5-5', 100, 50) } as never
+  })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const texto = async () => JSON.stringify(await ui.drawn())
+
+  await $.prompt.submit({ text: 'renderizar o vídeo' })
+  await $.turn.start({ text: 'renderizar o vídeo', turnId: 'r1' })
+  await $.tool.call({ tool: 'Bash', command: 'node render.js', description: 'Renderizar o vídeo', run_in_background: true } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', turnId: 'r1', durationMs: 5, isAborted: false } as never)
+
+  // O Claude respondeu, mas o render segue rodando: não pode aparecer como concluído.
+  const rodando = await texto()
+  expect(rodando).not.toContain('✓ renderizar o vídeo')
+  expect(rodando).toContain('renderizar o vídeo')
+  expect(rodando).toContain('$ Renderizar o vídeo')
+  const faixa = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const f = JSON.stringify(await faixa.drawn())
+  expect(f).toContain('renderizar o vídeo')
+  expect(f).toContain('em segundo plano: 1 comando')
+
+  // Chega o aviso (sessão parada): não vira pedido, e o pedido termina.
+  await $.prompt.submit({ text: NOTE('bg12345678') })
+  const fim = await texto()
+  expect(fim).toContain('✓ renderizar o vídeo')
+  expect(heads(fim)).toBe(1)
+
+  // O turno que o aviso dispara continua o MESMO pedido: volta a rodar e os tokens se somam nele.
+  await $.turn.start({ text: NOTE('bg12345678'), turnId: 'r2' })
+  for await (const _ of $.turn.step({ turnId: 'r2', index: 0, model: 'claude-opus-5-5', messageCount: 1 })) void _
+  const retomado = await texto()
+  expect(heads(retomado)).toBe(1)
+  expect(retomado).not.toContain('✓ renderizar o vídeo')
+  expect(retomado).toContain('150 tokens')
+  await $.turn.complete({ reason: 'answer', answer: '', turnId: 'r2', durationMs: 3, isAborted: false } as never)
+  const final = await texto()
+  expect(heads(final)).toBe(1)
+  expect(final).toContain('✓ renderizar o vídeo')
+})
+
+test('subagente em segundo plano: aparece rodando, soma os tokens e termina', async ($, on) => {
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: 'ok' }))
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'ag-1' }) as never)
+  on('turn.step', async function* (_$, e) {
+    yield { kind: 'stop', stopReason: 'end_turn', usage: usage('claude-sonnet-5-5', 100, 50) } as never
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: usage('claude-sonnet-5-5', 100, 50) } as never
+  })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const texto = async () => JSON.stringify(await ui.drawn())
+
+  await $.prompt.submit({ text: 'conferir os quadros do vídeo' })
+  await $.turn.start({ text: 'conferir os quadros do vídeo', turnId: 'a0' })
+  await $.agent.spawn({ tool_use_id: 'tu1', prompt: 'conferir quadros', description: 'Conferir os quadros', subagentType: 'Explore' } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', turnId: 'a0', durationMs: 2, isAborted: false } as never)
+  const rodando = await texto()
+  expect(rodando).toContain('🤖 Conferir os quadros')
+  expect(rodando).not.toContain('✓ conferir os quadros do vídeo')
+
+  // O loop do subagente gasta tokens: contam no subagente e no pedido.
+  for await (const _ of $.turn.step({ turnId: 'a1', index: 0, model: 'claude-sonnet-5-5', messageCount: 1, agentId: 'ag-1' } as never)) void _
+  expect(await texto()).toContain('sonnet 5.5 100% · 150 tokens')
+
+  // Quando o subagente termina, o pedido termina junto.
+  await $.turn.complete({ reason: 'answer', answer: '', turnId: 'a1', durationMs: 4, isAborted: false, agentId: 'ag-1' } as never)
+  const fim = await texto()
+  expect(fim).toContain('✓ conferir os quadros do vídeo')
+  expect(heads(fim)).toBe(1)
+})
+
+test('pedido de verdade logo depois de um /comando não é tratado como mensagem de máquina', async ($, on) => {
+  const real =
+    '<local-command-caveat>Caveat: as mensagens abaixo foram de um comando local.</local-command-caveat> <command-name>/fila</command-name> pergunta real do usuário'
+  expect(isMachine(undefined, real)).toBe(false)
+  expect(tidy(real)).toBe('pergunta real do usuário')
+
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await $.prompt.submit({ text: real })
+  const t = JSON.stringify(await ui.drawn())
+  expect(heads(t)).toBe(1)
+  expect(t).toContain('#1 pergunta real do usuário')
+  expect(t).not.toContain('Caveat')
+})
+
+test('a descrição do subagente não é trocada pelo prompt dele', async ($, on) => {
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'ag-9' }) as never)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await $.prompt.submit({ text: 'tarefa com agente' })
+  await $.turn.start({ text: 'tarefa com agente', turnId: 'g0' })
+  await $.agent.spawn({ tool_use_id: 'tu9', prompt: 'prompt enorme e interno do agente', description: 'Descrição curta', subagentType: 'Explore' } as never)
+  // O loop do subagente começa DEPOIS do spawn, com o prompt dele como texto.
+  await $.turn.start({ text: 'prompt enorme e interno do agente', turnId: 'g1', agentId: 'ag-9' } as never)
+  const t = JSON.stringify(await ui.drawn())
+  expect(t).toContain('🤖 Descrição curta')
+  expect(t).not.toContain('prompt enorme')
+})
+
+test('um aviso sozinho não sequestra o próximo pedido seu', async ($, on) => {
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: 'ok' }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const texto = async () => JSON.stringify(await ui.drawn())
+  await $.prompt.submit({ text: 'pedido antigo' })
+  await $.turn.start({ text: 'pedido antigo', turnId: 'w0' })
+  await $.turn.complete({ reason: 'answer', answer: '', turnId: 'w0', durationMs: 1, isAborted: false } as never)
+  // Chega um aviso com a sessão parada, mas nenhum turno nasce dele.
+  await $.prompt.submit({ text: NOTE('sem-turno-1') })
+  // O pedido seguinte é seu: tem de rodar como pedido novo, não retomar o antigo.
+  await $.prompt.submit({ text: 'pedido novo' })
+  await $.turn.start({ text: 'pedido novo', turnId: 'w1' })
+  const t = await texto()
+  expect(heads(t)).toBe(2)
+  expect(t).toContain('✓ pedido antigo')
+  expect(t).toContain('pedido novo')
+  expect(t).not.toContain('#1 pedido novo')
+})
+
+test('aviso com id desconhecido não fecha um comando rastreado; sem id real, vale o palpite', async ($, on) => {
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: 'ok' }))
+  let backgroundTaskId: string | undefined = 'real000001'
+  on('tool.call', () => ({ result: backgroundTaskId ? { backgroundTaskId } : {}, text: 'started', ref: 0, isReadOnly: true }) as never)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const texto = async () => JSON.stringify(await ui.drawn())
+
+  // Comando que o próprio app mandou para segundo plano (sem run_in_background no pedido): o id real vem no registro.
+  await $.prompt.submit({ text: 'rodar testes longos' })
+  await $.turn.start({ text: 'rodar testes longos', turnId: 'u0' })
+  await $.tool.call({ tool: 'Bash', command: 'npm test', description: 'Rodar os testes' } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', turnId: 'u0', durationMs: 1, isAborted: false } as never)
+  expect(await texto()).toContain('$ Rodar os testes')
+  expect(await texto()).not.toContain('✓ rodar testes longos')
+
+  // Aviso de outro id (um agente, um comando que não rastreamos): o comando continua rodando.
+  await $.prompt.submit({ text: NOTE('outro-id-999') })
+  expect(await texto()).not.toContain('✓ rodar testes longos')
+  // O aviso do id certo encerra.
+  await $.prompt.submit({ text: NOTE('real000001') })
+  expect(await texto()).toContain('✓ rodar testes longos')
+
+  // Sem id real em lugar nenhum (só run_in_background): o id é palpite, e um aviso desconhecido baixa esse comando.
+  backgroundTaskId = undefined
+  await $.prompt.submit({ text: 'rodar outro comando' })
+  await $.turn.start({ text: 'rodar outro comando', turnId: 'u1' })
+  await $.tool.call({ tool: 'Bash', command: 'node x.js', description: 'Outro comando', run_in_background: true } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', turnId: 'u1', durationMs: 1, isAborted: false } as never)
+  expect(await texto()).not.toContain('✓ rodar outro comando')
+  await $.prompt.submit({ text: NOTE('id-que-nao-conheco') })
+  expect(await texto()).toContain('✓ rodar outro comando')
 })

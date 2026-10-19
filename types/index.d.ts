@@ -13,13 +13,26 @@ export type Step = {
   tools: string[]
 }
 
+// Trabalho que segue rodando depois que o Claude termina de responder: subagente ou comando em segundo plano.
+export type Bg = {
+  id: string
+  kind: 'agent' | 'cmd'
+  label: string
+  status: 'running' | 'done' | 'failed'
+  usage: Usage[]
+  // Comando cujo id real não veio na resposta da ferramenta: usa o id da chamada e só então vale o palpite "o mais antigo".
+  guess?: boolean
+}
+
 export type Item = {
   id: number
   label: string
   text: string
-  status: 'waiting' | 'running' | 'done'
+  // 'background': o Claude já respondeu, mas ainda há subagente ou comando rodando para este pedido.
+  status: 'waiting' | 'running' | 'background' | 'done'
   steps: Step[]
   usage: Usage[]
+  bg?: Bg[]
   outcome?: 'answer' | 'aborted' | 'refusal' | 'error'
   durationMs?: number
   live?: string
