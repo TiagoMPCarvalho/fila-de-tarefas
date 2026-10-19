@@ -262,7 +262,7 @@ const view = (c: Ctx, list: Item[]) => {
   const shown = top.filter(i => i.status !== 'done' || dones.includes(i))
   return (
     <Box flexDirection="column">
-      {shown.map(i => Task(c, i, i.status === 'waiting' ? ++wait : 0, rows.filter(r => r.foldedInto === i.id)))}
+      {shown.map(i => Task(c, i, i.status === 'waiting' ? ++wait : 0, rows.filter(r => r.foldedInto === i.id && !isMachine(undefined, r.text))))}
     </Box>
   )
 }
