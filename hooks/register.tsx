@@ -38,45 +38,26 @@ type Ctx = {
   t: Tags
   frame: number
   pins: string[]
-  columns: number
   toggle: (key: string) => void
 }
 
-// "ⓘ" ao lado do item (só no painel): clicar fixa os detalhes logo abaixo; passar o mouse sobre o ⓘ abre um cartão.
-// O cartão é absoluto e ancorado na LINHA inteira (esquerda a direita, logo abaixo dela): não entra no fluxo,
-// não empurra nada e nunca depende de onde o ⓘ está, então a borda do painel não o corta.
-// Vai como lista de filhos da linha (o botão e o cartão); o grupo de hover liga um ao outro.
-const Info = (c: Ctx, key: string, lines: string[]) => {
-  const { Box, Text, Button } = c.t
-  const scope = `i${key}`
+// "ⓘ" ao lado do item (só no painel): clicar abre os detalhes logo abaixo, clicar de novo fecha.
+// Sem hover nem cartão flutuante: o detalhe entra no fluxo da lista, então nada fica cortado e o clique funciona em
+// qualquer superfície.
+const Info = (c: Ctx, key: string) => {
+  const { Text, Button } = c.t
   return [
     <Text key={`sp-${key}`}> </Text>,
-    <Button key={`b-${key}`} plain dimColor label="ⓘ" hover={{ scope }} onPress={() => c.toggle(key)} />,
-    <Box
-      key={`c-${key}`}
-      position="absolute"
-      display="none"
-      hover={{ scope, display: 'flex' }}
-      flexDirection="column"
-      borderStyle="round"
-      paddingX={1}
-      top={1}
-      left={0}
-      right={0}
-    >
-      {lines.map(l => (
-        <Text>{l}</Text>
-      ))}
-    </Box>,
+    <Button key={`b-${key}`} plain dimColor label="ⓘ" onPress={() => c.toggle(key)} />,
   ]
 }
 
-const Detail = (c: Ctx, key: string, lines: string[]) => {
+const Detail = (c: Ctx, key: string, lines: () => string[]) => {
   const { Box, Text } = c.t
   if (!c.pins.includes(key)) return null
   return (
     <Box key={`d-${key}`} flexDirection="column" paddingLeft={2}>
-      {lines.map(l => (
+      {lines().map(l => (
         <Text dimColor>{l}</Text>
       ))}
     </Box>
@@ -86,7 +67,7 @@ const Detail = (c: Ctx, key: string, lines: string[]) => {
 // Uma linha de título (máx. 1) + uma linha de custo (só se houver tokens medidos).
 const Entry = (
   c: Ctx,
-  o: { key: string; prefix: string; costPrefix: string; glyph: string; color?: string; dim?: boolean; label: string; cost?: string; info?: string[] },
+  o: { key: string; prefix: string; costPrefix: string; glyph: string; color?: string; dim?: boolean; label: string; cost?: string; info?: () => string[] },
 ) => {
   const { Box, Text } = c.t
   return (
@@ -94,7 +75,7 @@ const Entry = (
       <Box>
         {o.prefix !== '' && <Text dimColor>{o.prefix}</Text>}
         <Text color={o.color} dimColor={o.dim} wrap="truncate-end">{`${o.glyph} ${o.label}`}</Text>
-        {o.info && o.info.length > 0 && Info(c, o.key, o.info)}
+        {o.info && Info(c, o.key)}
       </Box>
       {o.cost && (
         <Box>
@@ -122,7 +103,7 @@ const StepRow = (c: Ctx, i: Item, s: Step, n: number, last: boolean) =>
     dim: s.status === 'pending' || s.status === 'completed',
     label: s.content,
     cost: costLine(s.usage),
-    info: stepInfo(s, n + 1),
+    info: () => stepInfo(s, n + 1),
   })
 
 // Mensagem enviada no meio do turno: aparece sob a tarefa que a leu.
@@ -135,7 +116,7 @@ const FoldedRow = (c: Ctx, k: Item, bad: boolean) =>
     color: bad ? 'red' : undefined,
     dim: !bad,
     label: k.label,
-    info: itemInfo(k, 0),
+    info: () => itemInfo(k, 0),
   })
 
 const Task = (c: Ctx, i: Item, pos: number, kids: Item[]) => {
@@ -151,7 +132,7 @@ const Task = (c: Ctx, i: Item, pos: number, kids: Item[]) => {
     dim: i.status !== 'running' && !bad,
     label: i.status === 'waiting' ? `#${pos} ${i.label}` : i.label,
     cost: costLine(i.usage, i.unmeasured),
-    info: itemInfo(i, pos),
+    info: () => itemInfo(i, pos),
   })
   const folded = kids.map(k => FoldedRow(c, k, bad))
 
@@ -178,9 +159,9 @@ const Task = (c: Ctx, i: Item, pos: number, kids: Item[]) => {
         <Box>
           <Text dimColor>{prefix}</Text>
           <Text color="yellow" dimColor wrap="truncate-end">{`↳ ${i.live}`}</Text>
-          {i.liveInfo && Info(c, `l${i.id}`, liveInfo(i.liveInfo))}
+          {i.liveInfo && Info(c, `l${i.id}`)}
         </Box>
-        {i.liveInfo && Detail(c, `l${i.id}`, liveInfo(i.liveInfo))}
+        {i.liveInfo && Detail(c, `l${i.id}`, () => liveInfo(i.liveInfo ?? ''))}
       </Box>
     ) : null
 
@@ -220,7 +201,7 @@ const view = (c: Ctx, list: Item[]) => {
 }
 
 const toggleKey = ($: Parameters<typeof update>[0], key: string) =>
-  update($, pinned, p => (p.includes(key) ? p.filter(k => k !== key) : [...p, key]))
+  update($, pinned, p => (p.includes(key) ? [] : [key]))
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
@@ -391,7 +372,7 @@ export const register: Register = on => {
     const list = await read($, items)
     const f = await read($, frame)
     const pins = await read($, pinned)
-    const ctx: Ctx = { t: $.ui.resolve(e) as Tags, frame: f, pins, columns: e.props.bodyColumns ?? 60, toggle: key => void toggleKey($, key) }
+    const ctx: Ctx = { t: $.ui.resolve(e) as Tags, frame: f, pins, toggle: key => void toggleKey($, key) }
     if (list.length === 0) {
       const { Text } = ctx.t
       return <Text dimColor>Sem tarefas ainda.</Text>

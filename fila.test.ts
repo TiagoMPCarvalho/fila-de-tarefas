@@ -142,17 +142,29 @@ test('sem tokens medidos não há linha de custo', async ($, on) => {
   expect(t).not.toContain('tokens')
 })
 
-test('o "i" fixa os detalhes ao clicar (só no painel)', async ($, on) => {
+test('o "i" abre os detalhes ao clicar, fecha ao clicar de novo e só um fica aberto', async ($, on) => {
   on('prompt.submit', (_$, e) => ({ text: e.text }))
-  await $.prompt.submit({ text: 'pedido com detalhes completos para o resumo' })
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(JSON.stringify(await ui.drawn())).not.toContain('"key":"d-t1"')
-  await ui.press({ key: 'b-t1' })
-  const depois = JSON.stringify(await ui.drawn())
-  expect(depois).toContain('"key":"d-t1"')
-  expect(depois).toContain('Estado: em espera (#1)')
-  await ui.press({ key: 'b-t1' })
-  expect(JSON.stringify(await ui.drawn())).not.toContain('"key":"d-t1"')
+  await $.prompt.submit({ text: 'primeiro pedido com detalhes' })
+  await $.prompt.submit({ text: 'segundo pedido com detalhes' })
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const raw = async () => JSON.stringify(await ui.drawn())
+    expect(await raw()).not.toContain('"key":"d-t1"')
+    await ui.press({ key: 'b-t1' })
+    const aberto = await raw()
+    expect(aberto).toContain('"key":"d-t1"')
+    expect(aberto).toContain('Pedido: primeiro pedido com detalhes')
+    expect(aberto).toContain('Estado: em espera (#1)')
+    // Abrir outro fecha o anterior.
+    await ui.press({ key: 'b-t2' })
+    const outro = await raw()
+    expect(outro).toContain('"key":"d-t2"')
+    expect(outro).not.toContain('"key":"d-t1"')
+    // Clicar de novo no aberto fecha.
+    await ui.press({ key: 'b-t2' })
+    expect(await raw()).not.toContain('"key":"d-t2"')
+    await ui.unmount()
+  }
 })
 
 test('mensagem enviada no meio do turno não fica esperando para sempre', async ($, on) => {
@@ -211,23 +223,20 @@ test('o que for interrompido fica vermelho, com a etapa em que parou', async ($,
   }
 })
 
-test('o cartão do "i" é ancorado na linha inteira e só o "i" o liga (nada empurra o layout)', async ($, on) => {
+test('o "i" não usa hover nem cartão flutuante (nada absoluto no painel nem na faixa)', async ($, on) => {
   on('prompt.submit', (_$, e) => ({ text: e.text }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
-  await $.prompt.submit({ text: 'pedido com cartão' })
-  await $.turn.start({ text: 'pedido com cartão', turnId: 'tc' })
+  await $.prompt.submit({ text: 'pedido sem cartão' })
+  await $.turn.start({ text: 'pedido sem cartão', turnId: 'tc' })
   for (const surface of ['terminal', 'desktop'] as const) {
     const pane = await $.ui.mount({ ...PANE, surface })
     const t = JSON.stringify(await pane.drawn())
-    // O botão e o cartão compartilham o grupo de hover; o cartão cobre a largura toda da linha, logo abaixo dela.
-    expect((t.match(/"scope":"it1"/g) ?? []).length).toBeGreaterThanOrEqual(2)
-    expect(t).toContain('"position":"absolute"')
-    expect(t).toContain('"top":1,"left":0,"right":0')
-    expect(t).not.toContain('"width":56')
+    expect(t).toContain('"label":"ⓘ"')
+    expect(t).not.toContain('"position":"absolute"')
+    expect(t).not.toContain('"hover"')
     await pane.unmount()
-    // Na faixa acima do prompt não há cartão (só o clique): nada absoluto ali.
     const band = await $.ui.mount({ ...BAND, surface })
-    expect(JSON.stringify(await band.drawn())).not.toContain('"position":"absolute"')
+    expect(JSON.stringify(await band.drawn())).not.toContain('ⓘ')
     await band.unmount()
   }
 })

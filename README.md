@@ -17,7 +17,7 @@ A faixa de cima mostra só duas linhas: o pedido que está rodando e o que o Cla
 ◦ #1 próximo pedido
 ```
 
-O ⓘ abre um resumo do item (pedido, estado, plano e tokens por modelo). Passando o mouse no painel ele abre um cartão; clicando, os detalhes ficam fixos embaixo do item.
+O ⓘ do painel abre um resumo do item (pedido, estado, plano e tokens por modelo) logo embaixo dele. Clica de novo pra fechar; só um fica aberto por vez.
 
 ## Instalar
 
@@ -35,9 +35,25 @@ claude plugin install fila-de-tarefas --marketplace TiagoMPCarvalho/fila-de-tare
 
 Ele pergunta se pode adicionar o marketplace (responde `y`) e depois o escopo (o `user` vale pras próximas sessões também).
 
-No app desktop o `/plugin` não roda. Lá é o + ao lado do campo de digitação, depois Plugins, Add marketplace com `TiagoMPCarvalho/fila-de-tarefas` e Add plugin.
+No app desktop o `/plugin install` não instala: ele só abre a tela de Plugins. Lá, usa o botão Adicionar (canto superior direito) pra adicionar o marketplace `TiagoMPCarvalho/fila-de-tarefas` e depois instala o fila-de-tarefas que aparece em Descobrir.
+
+Se preferir o shell, dá pra separar em dois passos:
+
+```
+claude plugin marketplace add TiagoMPCarvalho/fila-de-tarefas
+claude plugin install fila-de-tarefas@fila-de-tarefas
+```
 
 Instalado, o painel abre com `/fila`.
+
+## Atualizar
+
+```
+claude plugin marketplace update fila-de-tarefas
+claude plugin update fila-de-tarefas
+```
+
+Depois reinicia a sessão pra valer.
 
 ## Como os números são contados
 
