@@ -1,0 +1,8 @@
+{
+  "name": "fila-de-tarefas",
+  "version": "0.2.0",
+  "description": "Fila de pedidos com o plano do Claude como sub-itens, atividade ao vivo e custo em tokens por modelo",
+  "author": { "name": "TiagoMPCarvalho" },
+  "repository": "https://github.com/TiagoMPCarvalho/fila-de-tarefas",
+  "types": "./types/index.d.ts"
+}

@@ -1,0 +1,12 @@
+{
+  "name": "fila-de-tarefas",
+  "owner": { "name": "TiagoMPCarvalho" },
+  "metadata": { "description": "Plugin do Claude Code que mostra a fila de pedidos, o plano do Claude e o gasto de tokens por modelo" },
+  "plugins": [
+    {
+      "name": "fila-de-tarefas",
+      "source": "./",
+      "description": "Fila dos seus pedidos com o plano do Claude como sub-itens e o gasto de tokens por modelo"
+    }
+  ]
+}
